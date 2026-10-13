@@ -18,6 +18,7 @@ const state = {
   pickingOnMap: false,
   spotMarkers: [],
   routeLayer: null,
+  mandatory: new Set(), // названия точек, через которые маршрут обязан пройти
 };
 
 /* ------------------------------------------------------------------ utils */
@@ -207,17 +208,51 @@ function drawSpots() {
     m.bindPopup(
       `<div class="pop-name">☕ ${escapeHtml(s.name)}</div>` +
       `<div class="pop-addr">${escapeHtml(s.addr)}</div>` +
-      `<button class="pop-link">Сделать стартом</button>`,
+      `<button class="pop-link">Сделать стартом</button><br>` +
+      `<button class="pop-link pop-must">📌 Обязательная точка</button>`,
     );
     m.on('popupopen', (e) => {
-      e.popup.getElement().querySelector('.pop-link').addEventListener('click', () => {
+      const el = e.popup.getElement();
+      el.querySelector('.pop-link:not(.pop-must)').addEventListener('click', () => {
         setStart(s.lat, s.lon, `${s.name} (${s.addr})`);
         map.closePopup();
+      });
+      const mustBtn = el.querySelector('.pop-must');
+      syncMustBtn(mustBtn, s);
+      mustBtn.addEventListener('click', () => {
+        toggleMandatory(s);
+        syncMustBtn(mustBtn, s);
       });
     });
     state.spotMarkers.push({ spot: s, marker: m });
   });
 }
+
+/* ---------------------------------------------------------------- обязательные точки */
+function toggleMandatory(spot) {
+  if (state.mandatory.has(spot.name)) state.mandatory.delete(spot.name);
+  else state.mandatory.add(spot.name);
+  const sm = state.spotMarkers.find((x) => x.spot.i === spot.i);
+  const el = sm && sm.marker.getElement() && sm.marker.getElement().querySelector('.spot-dot');
+  if (el) el.classList.toggle('must', state.mandatory.has(spot.name));
+  updateMustInfo();
+  writeURL();
+}
+function syncMustBtn(btn, spot) {
+  btn.textContent = state.mandatory.has(spot.name) ? '✅ Обязательная (убрать)' : '📌 Обязательная точка';
+}
+function updateMustInfo() {
+  $('mustInfo').hidden = state.mandatory.size === 0;
+  $('mustCount').textContent = state.mandatory.size;
+}
+function applyMandatoryClasses() {
+  state.spotMarkers.forEach(({ spot, marker }) => {
+    const el = marker.getElement() && marker.getElement().querySelector('.spot-dot');
+    if (el) el.classList.toggle('must', state.mandatory.has(spot.name));
+  });
+  updateMustInfo();
+}
+$('mustClear').addEventListener('click', () => { state.mandatory.clear(); applyMandatoryClasses(); writeURL(); });
 
 /* ------------------------------------------------------------------ start */
 function setStart(lat, lon, label) {
@@ -342,12 +377,14 @@ async function getMatrix(coords, mode) {
 /* ------------------------------------------------------------------ optimizer */
 /**
  * Orienteering problem с временными окнами: максимизируем число посещённых
- * кофеен, при равенстве — минимизируем время финиша.
+ * кофеен, при равенстве — минимизируем время финиша. Обязательные точки
+ * (mandatory, индексы вершин) сеются в маршрут первыми и не выпадают;
+ * если обязательный набор не помещается в день — жертвуем самыми дальними
+ * и сообщаем их списком dropped.
  * dur: матрица времени в пути в секундах, индекс 0 — старт.
  * opts: { dayStart, dayEnd, service, open, close } — минуты от полуночи.
- * Возвращает { seq, sim } | null. sim: { finish, travel, wait, events[] }.
  */
-function optimize(n, dur, opts) {
+function optimize(n, dur, opts, mandatory = []) {
   const D = dur.map((row) => row.map((sec) => sec / 60)); // минуты
   const { dayStart, dayEnd, service, open, close } = opts;
 
@@ -368,10 +405,25 @@ function optimize(n, dur, opts) {
     return { finish: t, travel, wait, events };
   }
 
+  /* обязательные точки: упорядочиваем «ближайшим соседом» от старта,
+     при невозможности — отбрасываем самые дальние */
+  const dropped = [];
+  let seed = [];
+  {
+    const rest = mandatory.slice();
+    let prev = 0;
+    while (rest.length) {
+      rest.sort((a, b) => D[prev][a] - D[prev][b]);
+      prev = rest.shift();
+      seed.push(prev);
+    }
+    while (seed.length && !simulate(seed)) dropped.push(seed.pop());
+  }
+
   /* жадное построение: на каждом шаге берём точку с самым ранним временем,
      куда ещё можно успеть (со случайностью для мультистарта) */
-  function greedy(randomized) {
-    const seq = [];
+  function greedy(randomized, seed0) {
+    const seq = seed0.slice();
     for (;;) {
       const cand = [];
       for (let v = 1; v < n; v++) {
@@ -433,7 +485,7 @@ function optimize(n, dur, opts) {
 
   let best = null;
   for (let r = 0; r < 10; r++) {
-    let seq = greedy(r > 0);
+    let seq = greedy(r > 0, seed);
     seq = tryInsertMore(seq);
     const sim = improve(seq);
     if (!sim) continue;
@@ -443,7 +495,7 @@ function optimize(n, dur, opts) {
       best = { seq, sim };
     }
   }
-  return best;
+  return best ? { ...best, dropped } : { seq: seed, sim: simulate(seed), dropped };
 }
 
 /* ------------------------------------------------------------------ build */
@@ -465,25 +517,35 @@ async function build() {
       close: parseHM($('openTo').value),
     };
 
-    /* берём ближайшие к старту точки (у OSRM лимит координат в матрице) */
-    const subset = SPOTS.slice()
-      .sort((a, b) => haversineKm(state.start, a) - haversineKm(state.start, b))
-      .slice(0, MAX_TABLE_COORDS - 1);
+    /* берём ближайшие к старту точки (у OSRM лимит координат в матрице),
+       но обязательные включаем всегда, как бы далеко они ни были */
+    const ranked = SPOTS.slice().sort((a, b) => haversineKm(state.start, a) - haversineKm(state.start, b));
+    const subset = [];
+    const taken = new Set();
+    for (const s of SPOTS) {
+      if (state.mandatory.has(s.name) && subset.length < MAX_TABLE_COORDS - 1) { subset.push(s); taken.add(s.name); }
+    }
+    for (const s of ranked) {
+      if (subset.length >= MAX_TABLE_COORDS - 1) break;
+      if (!taken.has(s.name)) { subset.push(s); taken.add(s.name); }
+    }
     const coords = [state.start, ...subset.map((s) => ({ lat: s.lat, lon: s.lon }))];
 
     const { dur, approx } = await getMatrix(coords, mode);
-    const best = optimize(coords.length, dur, opts);
+    const mandatoryIdx = subset.map((s, i) => (state.mandatory.has(s.name) ? i + 1 : 0)).filter(Boolean);
+    const best = optimize(coords.length, dur, opts, mandatoryIdx);
 
     if (!best || !best.sim.events.length) {
       showEmpty();
       return;
     }
+    const droppedNames = (best.dropped || []).map((v) => subset[v - 1].name);
 
     /* геометрия маршрута по реальным дорогам */
     const seqIdx = [0, ...best.seq];
     const { geometry, distanceKm, approxGeom } = await getGeometry(seqIdx, coords, mode);
 
-    render(best, subset, opts, geometry, distanceKm, approx || approxGeom, mode);
+    render(best, subset, opts, geometry, distanceKm, approx || approxGeom, mode, droppedNames);
   } catch (err) {
     console.error(err);
     toast('Не удалось построить маршрут — попробуй ещё раз');
@@ -523,6 +585,7 @@ function showEmpty() {
     '<div class="t-addr">Расширь время дня, уменьши минуты на напиток или выбери другой старт</div></div></li>';
   $('yandexLink').style.display = 'none';
   $('qrBlock').hidden = true;
+  $('audioCard').hidden = true;
 }
 
 /* QR-код со ссылкой на маршрут в Яндекс.Картах — чтобы открыть на телефоне */
@@ -550,9 +613,10 @@ function renderQR(url) {
 }
 
 /* ------------------------------------------------------------------ render */
-function render(best, subset, opts, geometry, distanceKm, approx, mode) {
+function render(best, subset, opts, geometry, distanceKm, approx, mode, droppedNames = []) {
   const { sim } = best;
   const stops = sim.events.map((e, k) => ({ ...subset[e.v - 1], ord: k + 1, ...e }));
+  stopAudio();
 
   if (state.routeLayer) { map.removeLayer(state.routeLayer); state.routeLayer = null; }
   state.spotMarkers.forEach(({ marker }) => {
@@ -595,16 +659,27 @@ function render(best, subset, opts, geometry, distanceKm, approx, mode) {
   $('stats').innerHTML = chips.map((c) => `<div class="stat"><div class="v">${c.v}</div><div class="k">${c.k}</div></div>`).join('');
   $('approxNote').hidden = !approx;
 
+  /* обязательные точки, которые не влезли в окно дня */
+  const mustWarn = document.getElementById('mustWarn');
+  if (mustWarn) mustWarn.remove();
+  if (droppedNames.length) {
+    const w = document.createElement('div');
+    w.className = 'warn'; w.id = 'mustWarn';
+    w.innerHTML = `⚠️ Обязательные точки не помещаются в день: <b>${droppedNames.map(escapeHtml).join(', ')}</b>. Расширь окно дня или сними 📌.`;
+    $('stats').before(w);
+  }
+
   /* --- таймлайн --- */
   const tl = $('timeline');
   tl.innerHTML = '';
   stops.forEach((s) => {
     const li = document.createElement('li');
     const waitTxt = s.st - s.arr >= 1 ? ` <span class="wait">(ждём открытие ${Math.round(s.st - s.arr)} мин)</span>` : '';
+    const pin = state.mandatory.has(s.name) ? ' <span class="t-pin" title="обязательная точка">📌</span>' : '';
     li.innerHTML =
       `<div class="t-badge">${s.ord}</div>` +
       `<div class="t-body">` +
-      `<div class="t-name">☕ ${escapeHtml(s.name)}</div>` +
+      `<div class="t-name">☕ ${escapeHtml(s.name)}${pin}</div>` +
       `<div class="t-addr">${escapeHtml(s.addr)}</div>` +
       `<div class="t-time"><span class="leg">⏱ ${fmtDur(s.leg)} в пути · </span><span class="arr">приход ${fmtHM(s.arr)}</span>${waitTxt} · уход ${fmtHM(s.leave)}</div>` +
       `</div>`;
@@ -627,6 +702,7 @@ function render(best, subset, opts, geometry, distanceKm, approx, mode) {
 
   state.route = { stops, sim, opts, approx, mode, distanceKm };
   $('resultCard').hidden = false;
+  renderAudioGuide(stops, layer);
   $('resultCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   writeURL();
 }
@@ -643,11 +719,133 @@ $('shareBtn').addEventListener('click', async () => {
   }
 });
 
-/* ------------------------------------------------------------------ url state */
+/* ---------------------------------------------------------------- аудиогид */
+const HISTORY = (window.HISTORY || []);
+const STORY_RADIUS_M = 1000;      // история привязывается к остановкам ближе 1 км
+const audioState = { stories: [], active: false, idx: -1, playAll: false };
+
+function pickStories(stops) {
+  const items = [];
+  for (const h of HISTORY) {
+    let best = null;
+    stops.forEach((s) => {
+      const d = haversineKm(h, s) * 1000;
+      if (!best || d < best.d) best = { d, s };
+    });
+    if (best && best.d <= STORY_RADIUS_M) items.push({ ...h, dist: Math.round(best.d), stop: best.s });
+  }
+  items.sort((a, b) => a.stop.ord - b.stop.ord || a.dist - b.dist);
+  return items;
+}
+
+let ruVoice = null;
+function ensureVoice() {
+  if (!('speechSynthesis' in window)) return null;
+  if (ruVoice) return ruVoice;
+  const vs = speechSynthesis.getVoices();
+  const pref = ['Milena', 'Yuri', 'Google русский', 'Microsoft Irina'];
+  for (const name of pref) {
+    const v = vs.find((x) => x.lang && x.lang.toLowerCase().startsWith('ru') && x.name.includes(name));
+    if (v) { ruVoice = v; return v; }
+  }
+  ruVoice = vs.find((x) => x.lang && x.lang.toLowerCase().startsWith('ru')) || null;
+  return ruVoice;
+}
+if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => { ruVoice = null; ensureVoice(); };
+
+function speakOne(i) {
+  const it = audioState.stories[i];
+  if (!it) return stopAudio();
+  audioState.idx = i;
+  const u = new SpeechSynthesisUtterance(`${it.title}. ${it.text}`);
+  u.lang = 'ru-RU';
+  u.rate = 1;
+  const v = ensureVoice();
+  if (v) u.voice = v;
+  u.onend = () => {
+    if (audioState.active && audioState.playAll && audioState.idx + 1 < audioState.stories.length) {
+      speakOne(audioState.idx + 1);
+    } else stopAudio();
+  };
+  u.onerror = () => stopAudio();
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+  highlightAudio(i);
+}
+
+function stopAudio() {
+  audioState.active = false; audioState.idx = -1; audioState.playAll = false;
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  highlightAudio(-1);
+}
+
+function highlightAudio(i) {
+  document.querySelectorAll('#audioList li').forEach((li) => {
+    li.classList.toggle('playing', +li.dataset.i === i);
+  });
+}
+
+function renderAudioGuide(stops, layer) {
+  const card = $('audioCard');
+  if (!('speechSynthesis' in window)) { card.hidden = true; return; }
+  const stories = pickStories(stops);
+  audioState.stories = stories;
+  const list = $('audioList');
+  list.innerHTML = '';
+  if (!stories.length) {
+    card.hidden = false;
+    list.innerHTML = '<li style="cursor:default"><div class="t-body"><div class="t-addr">Рядом с этим маршрутом историй не нашлось — поищи историю в центре 😉</div></div></li>';
+    return;
+  }
+  stories.forEach((h, i) => {
+    const li = document.createElement('li');
+    li.dataset.i = i;
+    li.innerHTML =
+      `<div class="a-badge">🏛</div>` +
+      `<div class="t-body">` +
+      `<div class="t-name">${escapeHtml(h.title)}</div>` +
+      `<div class="t-addr">${h.who} · у остановки №${h.stop.ord} «${escapeHtml(h.stop.name)}», ${h.dist} м</div>` +
+      `<div class="a-text">${escapeHtml(h.text)}</div>` +
+      `<button class="btn ghost a-play">▶ Послушать</button>` +
+      `</div>`;
+    li.querySelector('.a-play').addEventListener('click', () => {
+      if (audioState.active && audioState.idx === i) { stopAudio(); return; }
+      audioState.active = true; audioState.playAll = false;
+      speakOne(i);
+    });
+    li.addEventListener('click', (e) => {
+      if (e.target.closest('.a-play')) return;
+      map.flyTo([h.lat, h.lon], 15);
+    });
+    list.appendChild(li);
+    /* маркер истории на карте */
+    L.marker([h.lat, h.lon], {
+      icon: L.divIcon({ className: 'leaflet-div-icon', html: '<div class="story-marker">🏛</div>', iconSize: [26, 26], iconAnchor: [13, 13] }),
+      zIndexOffset: 700,
+    }).addTo(layer).bindPopup(
+      `<div class="pop-name">🏛 ${escapeHtml(h.title)}</div>` +
+      `<div class="pop-addr">${h.who}</div>` +
+      `<div class="pop-addr" style="margin-top:4px;max-width:230px">${escapeHtml(h.text)}</div>`,
+    );
+  });
+  card.hidden = false;
+}
+
+$('playAllBtn').addEventListener('click', () => {
+  if (!audioState.stories.length) return;
+  if (audioState.active) { stopAudio(); return; }
+  audioState.active = true; audioState.playAll = true;
+  speakOne(0);
+  toast('🎧 Включи звук — рассказываю историю маршрута');
+});
+$('stopAudioBtn').addEventListener('click', stopAudio);
+
+
 function writeURL() {
   if (!history.replaceState) return;
   const p = new URLSearchParams();
   if (state.start) p.set('start', `${state.start.lat.toFixed(5)},${state.start.lon.toFixed(5)}`);
+  if (state.mandatory.size) p.set('must', [...state.mandatory].join(','));
   ['dayStart', 'dayEnd', 'svcTime', 'mode', 'openFrom', 'openTo'].forEach((k) => p.set(k, $(k).value));
   history.replaceState(null, '', `?${p}`);
 }
@@ -659,6 +857,13 @@ function restoreFromURL() {
   });
   const svc = p.get('svcTime');
   if (svc !== null && /^\d+$/.test(svc)) $('svcTime').value = svc;
+  const must = p.get('must');
+  if (must) {
+    must.split(',').map((x) => x.trim()).filter(Boolean).forEach((name) => {
+      if (SPOTS.some((s) => s.name === name)) state.mandatory.add(name);
+    });
+    applyMandatoryClasses();
+  }
   const s = p.get('start');
   if (s) {
     const [lat, lon] = s.split(',').map(Number);

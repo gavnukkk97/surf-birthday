@@ -79,8 +79,12 @@
           </span>
         </label>
       </div>
+      <div id="mustInfo" class="must-info" hidden>
+        📌 Обязательных точек: <b id="mustCount">0</b>
+        <button id="mustClear" class="link-btn">очистить</button>
+      </div>
       <button id="buildBtn" class="btn primary big" disabled>🎉 Построить маршрут</button>
-      <p class="hint">Маршрут максимизирует число кофеен: учитывает время в пути, часы работы и паузу на каждый напиток.</p>
+      <p class="hint">Маршрут максимизирует число кофеен: учитывает время в пути, часы работы и паузу на каждый напиток. Отметь 📌 в попапе точки — и маршрут гарантированно зайдёт в неё.</p>
     </section>
 
     <section id="resultCard" class="card result" hidden>
@@ -98,6 +102,16 @@
       </div>
     </section>
 
+    <section id="audioCard" class="card audio" hidden>
+      <h2><span class="step">🎧</span> Аудиогид по маршруту</h2>
+      <p class="hint">Зарисовки о Москве рядом с твоим маршрутом — писатели, художники, учёные и инженеры. Озвучка голосом браузера (тестовый режим).</p>
+      <div class="audio-controls">
+        <button id="playAllBtn" class="btn primary">▶ Слушать весь маршрут</button>
+        <button id="stopAudioBtn" class="btn ghost">⏹ Стоп</button>
+      </div>
+      <ol id="audioList" class="audio-list"></ol>
+    </section>
+
     <footer class="disclaimer">
       <p><b>Как это работает.</b> В день рождения Surf Coffee дарит бесплатный напиток по программе лояльности —
       в каждом споте сети, то есть за день можно собрать столько напитков, сколько точек успеешь обойти.
@@ -113,7 +127,8 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="vendor/qrcode.min.js"></script>
-<script src="data.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="data.js?v=8"></script>
+<script src="history.js?v=8"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
