@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Surf Birthday Route — максимум бесплатного кофе в день рождения 🏄</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=7">
+</head>
+<body>
+
+<header class="header">
+  <div class="brand">
+    <span class="logo">🏄</span>
+    <div>
+      <h1>Surf Birthday Route</h1>
+      <p class="tagline">Обойди максимум кофеен Surf Coffee в свой день рождения и собери все бесплатные напитки 🎂</p>
+    </div>
+  </div>
+  <div class="header-note">ID точек и адреса — surfcoffee.ru · маршруты — OSRM / OpenStreetMap</div>
+</header>
+
+<div class="layout">
+
+  <aside class="panel">
+
+    <section class="card">
+      <h2><span class="step">1</span> Где начинаешь день?</h2>
+
+      <div class="search-row">
+        <input id="addrInput" type="text" placeholder="Введи адрес или место: «Кузнецкий мост 12»…" autocomplete="off">
+        <button id="searchBtn" class="icon-btn" title="Найти">🔍</button>
+      </div>
+      <div id="searchResults" class="search-results" hidden></div>
+
+      <div class="start-buttons">
+        <button id="geolocBtn" class="btn ghost">📍 Моё местоположение</button>
+        <button id="pickBtn" class="btn ghost">🗺 Указать на карте</button>
+      </div>
+
+      <div id="startInfo" class="start-info empty">
+        Старт не выбран — найди адрес, кликни по карте или перетащи торт 🎂
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">2</span> План на день</h2>
+      <div class="settings-grid">
+        <label>Начать в
+          <select id="dayStart">
+            <option>07:00</option><option>08:00</option><option selected>09:00</option>
+            <option>10:00</option><option>11:00</option><option>12:00</option>
+          </select>
+        </label>
+        <label>Закончить к
+          <select id="dayEnd">
+            <option>18:00</option><option>19:00</option><option>20:00</option>
+            <option>21:00</option><option selected>22:00</option><option>23:00</option>
+          </select>
+        </label>
+        <label>Минут на напиток
+          <input id="svcTime" type="number" min="5" max="90" step="5" value="20">
+        </label>
+        <label>Передвигаемся
+          <select id="mode">
+            <option value="foot" selected>🚶 Пешком</option>
+            <option value="car">🚗 На машине / такси</option>
+          </select>
+        </label>
+        <label class="wide">Кофейни открыты
+          <span class="hours-pair">
+            <select id="openFrom"><option>07:00</option><option selected>08:00</option><option>09:00</option><option>10:00</option></select>
+            —
+            <select id="openTo"><option>21:00</option><option>22:00</option><option selected>23:00</option></select>
+          </span>
+        </label>
+      </div>
+      <button id="buildBtn" class="btn primary big" disabled>🎉 Построить маршрут</button>
+      <p class="hint">Маршрут максимизирует число кофеен: учитывает время в пути, часы работы и паузу на каждый напиток.</p>
+    </section>
+
+    <section id="resultCard" class="card result" hidden>
+      <h2><span class="step">3</span> Твой маршрут 🎉</h2>
+      <div id="approxNote" class="warn" hidden>⚠️ Сервер маршрутов недоступен — время оценено приблизительно (по прямой с поправкой).</div>
+      <div id="stats" class="stats"></div>
+      <ol id="timeline" class="timeline"></ol>
+      <div class="result-actions">
+        <a id="yandexLink" class="btn primary" href="#" target="_blank" rel="noopener">🧭 Открыть в Яндекс.Картах</a>
+        <button id="shareBtn" class="btn ghost">🔗 Скопировать ссылку</button>
+      </div>
+      <div id="qrBlock" class="qr-block" hidden>
+        <div class="qr-frame"><div id="qrCode"></div></div>
+        <div class="qr-text">📱 Наведи камеру телефона — маршрут откроется в Яндекс.Картах, и можно идти за бесплатным кофе</div>
+      </div>
+    </section>
+
+    <footer class="disclaimer">
+      <p><b>Как это работает.</b> В день рождения Surf Coffee дарит бесплатный напиток по программе лояльности —
+      в каждом споте сети, то есть за день можно собрать столько напитков, сколько точек успеешь обойти.
+      Сервис строит маршрут, максимизирующий число посещённых кофеен.</p>
+      <p>Условия акции и часы работы конкретной кофейни уточняйте на месте или в приложении Surf.
+      Список точек — с surfcoffee.ru (октябрь 2026). Проект не связан с Surf Coffee: это фанатский планировщик дня рождения 💛</p>
+    </footer>
+  </aside>
+
+  <main id="map"></main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="vendor/qrcode.min.js"></script>
+<script src="data.js?v=7"></script>
+<script src="app.js?v=7"></script>
+</body>
+</html>
